@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>ESP_Buddy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="1" y="5" width="30" height="22" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="8" y="11" width="6" height="8" rx="2" fill="currentColor"/><rect x="18" y="11" width="6" height="8" rx="2" fill="currentColor"/></svg>
+    <div>
+      <h1>ESP_Buddy</h1>
+      <div id="dataTime" class="muted">…</div>
+    </div>
+  </div>
+  <div class="top-right">
+    <div class="lang" role="group" aria-label="Language">
+      <button data-lang="en">EN</button><button data-lang="tr">TR</button>
+    </div>
+    <div id="linkBadge" class="badge" data-t="notConnected"></div>
+  </div>
+</header>
+
+<div id="warning" class="warning hidden"></div>
+
+<section class="panel">
+  <div class="row">
+    <button id="btnSend" class="primary" data-t="connectSend"></button>
+    <button id="btnConnect" data-t="connectOnly"></button>
+  </div>
+  <div id="progress" class="progress hidden"><div id="progressBar"></div></div>
+  <div id="status" class="muted status"></div>
+
+  <div id="remote" class="remote off">
+    <button data-cmd="PREV" data-title="prev">◀</button>
+    <button id="btnPause" data-cmd="PAUSE" data-title="pause">❚❚</button>
+    <button data-cmd="NEXT" data-title="next">▶</button>
+    <button id="btnTime" data-t="syncTime"></button>
+    <label class="bright">☀ <input id="brightness" type="range" min="0" max="255" value="207"></label>
+  </div>
+</section>
+
+<section>
+  <div class="section-head">
+    <h2 data-t="screens"></h2>
+    <div class="row small">
+      <button id="btnAll" class="link" data-t="all"></button>
+      <button id="btnNone" class="link" data-t="none"></button>
+    </div>
+  </div>
+  <div id="grid" class="grid"></div>
+</section>
+
+<details class="panel">
+  <summary data-t="moodsSources"></summary>
+  <div id="moods"></div>
+  <div id="sources" class="sources"></div>
+</details>
+
+<details class="panel">
+  <summary data-t="log"></summary>
+  <pre id="log"></pre>
+</details>
+
+<footer class="muted" data-t="footer"></footer>
+
+<script src="app.js"></script>
+</body>
+</html>
