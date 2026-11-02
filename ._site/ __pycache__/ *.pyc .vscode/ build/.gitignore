@@ -1,7 +1,0 @@
-_site/
-__pycache__/
-*.pyc
-.vscode/
-build/
-.DS_Store
-Thumbs.db
