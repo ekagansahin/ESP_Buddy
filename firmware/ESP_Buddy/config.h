@@ -27,6 +27,6 @@
 #define SCREEN_DIR          "/s"      // LittleFS folder holding the screen files
 #define MAX_FILE            48000     // max bytes per file (buffered in RAM; same as generator/generate.py)
 #define DEFAULT_DURATION_S  6         // used when a file header says 0
-#define PROGRESS_STEP       4096      // send a PROGRESS notification every this many bytes
+#define PROGRESS_STEP       1024      // PROGRESS every this many bytes (+ once when complete); the page uses it as flow control
 #define DEFAULT_OFFSET_MIN  180       // TIME command default UTC offset (Turkey, UTC+3)
 #define RECEIVE_TIMEOUT_MS  30000     // leave receive mode after this long without activity
