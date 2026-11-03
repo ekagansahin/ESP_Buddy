@@ -188,6 +188,9 @@ volatile size_t   rxExpected = 0;
 volatile bool     rxOverflow = false;
 volatile bool     rxClosed   = true;
 volatile uint32_t lastRxActivity = 0;
+portMUX_TYPE      rxMux      = portMUX_INITIALIZER_UNLOCKED;   // guards rxBuf/rxLen between the BLE task and loop()
+bool              donePending = false;  // DONE arrived while bytes were still in flight
+uint32_t          doneDeadline = 0;
 uint32_t          rxCrc      = 0;
 char              rxName[32] = "";
 int               receivedCount = 0;
@@ -234,8 +237,7 @@ void reply(const char* fmt, ...) {
 void flushReplies() {
   Msg m;
   while (xQueueReceive(replyQueue, &m, 0) == pdTRUE) {
-    Serial.print("> ");
-    Serial.println(m.s);
+    Serial.printf("%8lu > %s\n", (unsigned long)millis(), m.s);
     if (connected && statusChr) {
       statusChr->setValue((uint8_t*)m.s, strlen(m.s));
       statusChr->notify();
@@ -245,12 +247,15 @@ void flushReplies() {
 }
 
 void rxRelease() {
+  portENTER_CRITICAL(&rxMux);
   rxClosed = true;
   uint8_t* p = rxBuf;
   rxBuf = nullptr;
   rxLen = 0;
   rxExpected = 0;
   rxOverflow = false;
+  portEXIT_CRITICAL(&rxMux);
+  donePending = false;
   if (p) free(p);
 }
 
@@ -602,8 +607,7 @@ void demoSpinner(GFXcanvas1& c, int i) {
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
-// FILE is handled right away in the BLE task: when the write is acknowledged to the phone
-// the buffer already exists, so no data packet can be lost.
+// FILE allocates the receive buffer; the page sends data only after the READY reply.
 void fileStart(const char* arg) {
   char name[32];
   unsigned long size = 0, crc = 0;
@@ -674,8 +678,7 @@ int deleteAll() {
 }
 
 void handleCommand(char* s) {
-  Serial.print("< ");
-  Serial.println(s);
+  Serial.printf("%8lu < %s\n", (unsigned long)millis(), s);
 
   char* arg = strchr(s, ' ');
   if (arg) { *arg++ = 0; while (*arg == ' ') arg++; } else arg = s + strlen(s);
@@ -685,7 +688,12 @@ void handleCommand(char* s) {
     fileStart(arg);
   } else if (!strcmp(s, "DONE")) {
     lastRxActivity = millis();
-    fileDone();
+    if (rxBuf && !rxOverflow && rxLen < rxExpected) {
+      donePending = true;                 // data still arriving: finish when complete (max 3 s)
+      doneDeadline = millis() + 3000;
+    } else {
+      fileDone();
+    }
   } else if (!strcmp(s, "ABORT")) {
     rxRelease();
     reply("OK ABORT");
@@ -792,23 +800,20 @@ class CommandCB : public BLECharacteristicCallbacks {
     m.s[n] = 0;
     while (n && (m.s[n - 1] == '\r' || m.s[n - 1] == '\n' || m.s[n - 1] == ' ')) m.s[--n] = 0;
     if (!n) return;
-    if (strncasecmp(m.s, "FILE ", 5) == 0) {
-      fileStart(m.s + 5);
-      return;
-    }
     xQueueSend(commandQueue, &m, 0);
   }
 };
 
 class DataCB : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
-    uint8_t* dst = rxBuf;
-    if (!dst || rxClosed) return;
     size_t n = c->getLength();
-    size_t len = rxLen;
-    if (len + n > rxExpected) { rxOverflow = true; return; }
-    memcpy(dst + len, c->getData(), n);
-    rxLen = len + n;
+    const uint8_t* src = c->getData();
+    portENTER_CRITICAL(&rxMux);
+    if (rxBuf && !rxClosed) {
+      if (rxLen + n > rxExpected) rxOverflow = true;
+      else { memcpy(rxBuf + rxLen, src, n); rxLen += n; }
+    }
+    portEXIT_CRITICAL(&rxMux);
     lastRxActivity = millis();
   }
 };
@@ -894,12 +899,17 @@ void loop() {
   if (!rxClosed && rxBuf) {
     size_t len = rxLen;
     if (len < lastReported) lastReported = 0;
-    if (len - lastReported >= PROGRESS_STEP) {
+    if (len - lastReported >= PROGRESS_STEP || (len == rxExpected && len != lastReported)) {
       lastReported = len;
       reply("PROGRESS %u", (unsigned)len);
     }
   } else {
     lastReported = 0;
+  }
+
+  if (donePending && (rxLen >= rxExpected || rxOverflow || (int32_t)(millis() - doneDeadline) >= 0)) {
+    donePending = false;
+    fileDone();
   }
 
   // Link lost: drop the half-received file and go back to playing
