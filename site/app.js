@@ -7,6 +7,11 @@ const DATA = 'c34519c8-f6e2-4dba-9be7-f5591b429020';
 const STATUS = 'ae53dc3e-1ba9-4f77-b87c-428aa72328e8';
 const CHUNK = 180;                // iPhone MTU 185 -> 182 bytes; safe everywhere that matters
 const WINDOW = 2048;              // max bytes in flight before the device confirms them (PROGRESS)
+// iOS (Bluefy) stalls the whole link for ~50 s after a burst of writes without response, so on iOS every
+// data write is acknowledged ("ack" mode). Desktop Chrome/Edge use the fast windowed mode.
+// Override with ?mode=fast or ?mode=ack in the address.
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const MODE = new URLSearchParams(location.search).get('mode') || (IOS ? 'ack' : 'fast');
 const OLED = [223, 243, 255];
 
 // ---------------------------------------------------------------- texts
@@ -339,7 +344,7 @@ async function connect() {
   chrStatus.addEventListener('characteristicvaluechanged', onNotify);
   await chrStatus.startNotifications();
   showLink(true);
-  log('connected: ' + (device.name || 'ESP_Buddy'));
+  log(`connected: ${device.name || 'ESP_Buddy'} · transfer mode: ${MODE}`);
   await syncTime();
   try { status(await command('INFO', /^INFO/)); } catch (e) { log(e.message); }
 }
@@ -358,7 +363,8 @@ async function sendFile(name, b, progress) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     // Without-response writes are fast, but iOS queues them; so at most WINDOW bytes are sent ahead of what
     // the device has confirmed. If confirmations stall, the rest goes as acknowledged (slower) writes.
-    let withResponse = attempt > 1;
+    let withResponse = attempt > 1 || MODE === 'ack';
+    const t0 = performance.now();
     try {
       acked = 0;
       await command(`FILE ${name} ${b.length} ${crc}`, new RegExp('^READY ' + escapeRe(name)));
@@ -379,6 +385,7 @@ async function sendFile(name, b, progress) {
       await waitAck(b.length, 8000);           // every byte confirmed before DONE
       progress(b.length);
       await command('DONE', new RegExp('^OK DONE ' + escapeRe(name)), 15000);
+      log(`${name}: ${b.length} B in ${Math.round(performance.now() - t0)} ms (${withResponse ? 'ack' : 'fast'})`);
       return;
     } catch (e) {
       log(`${name}: ${e.message} (${t('attempt')(attempt)})`);
