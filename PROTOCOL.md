@@ -84,6 +84,8 @@ Device name: `ESP_Buddy`
 
 Keep `data` chunks at **≤ 180 bytes**, because the iPhone MTU is 185. After every command, wait for its `OK …` or `ERR …` reply.
 
+**Flow control:** iOS queues writes without response, and a long queue delays the commands behind it. So the page keeps at most 2 KB in flight beyond the last `PROGRESS`, and sends `DONE` only after `PROGRESS` reports the whole file. If `DONE` still arrives before the last bytes, the device waits up to 3 s for them.
+
 ## 5. Commands
 
 | Command | Reply | Effect |
@@ -91,7 +93,7 @@ Keep `data` chunks at **≤ 180 bytes**, because the iPhone MTU is 185. After ev
 | `TIME <unix_s> [offset_min]` | `OK TIME 14:05:10` | Sets the clock. The offset defaults to 180 (UTC+3). Time keeps running until power is lost. |
 | `CLEAR` | `OK CLEAR <n>` | Deletes every screen and enters receive mode. |
 | `FILE <name> <bytes> <crc32hex>` | `READY <name>` | Starts receiving a file. CRC-32 is the same as zlib's. |
-| *(data writes)* | `PROGRESS <bytes>` every 4 KB | |
+| *(data writes)* | `PROGRESS <bytes>` every 1 KB and once when the file is complete | The page uses these as flow control |
 | `DONE` | `OK DONE <name>` or `ERR DONE length\|crc\|format\|space` | Checks length, CRC and format, then saves to flash. |
 | `ABORT` | `OK ABORT` | Drops a half-received file. |
 | `SHOW` | `OK SHOW <n>` | Leaves receive mode and starts from the first screen. |
