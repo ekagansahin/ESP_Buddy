@@ -6,6 +6,7 @@ const COMMAND = '0c3fb439-03a5-4085-ad4e-c2975815cf1a';
 const DATA = 'c34519c8-f6e2-4dba-9be7-f5591b429020';
 const STATUS = 'ae53dc3e-1ba9-4f77-b87c-428aa72328e8';
 const CHUNK = 180;                // iPhone MTU 185 -> 182 bytes; safe everywhere that matters
+const WINDOW = 2048;              // max bytes in flight before the device confirms them (PROGRESS)
 const OLED = [223, 243, 255];
 
 // ---------------------------------------------------------------- texts
@@ -269,14 +270,31 @@ function showLink(on) {
   $('btnConnect').textContent = on ? t('disconnect') : t('connectOnly');
 }
 
+// bytes of the current file the device has confirmed (from PROGRESS replies)
+let acked = 0;
+let ackWaiter = null;
+
+function waitAck(target, ms) {
+  if (acked >= target) return Promise.resolve();
+  return new Promise((ok, no) => {
+    const z = setTimeout(() => { ackWaiter = null; no(new Error(`no progress (${acked}/${target})`)); }, ms);
+    ackWaiter = { target, ok: () => { clearTimeout(z); ackWaiter = null; ok(); } };
+  });
+}
+
 function onNotify(e) {
   const s = dec.decode(e.target.value);
+  if (s.startsWith('PROGRESS')) {
+    acked = parseInt(s.slice(9), 10) || 0;
+    if (ackWaiter && acked >= ackWaiter.target) ackWaiter.ok();
+    return;
+  }
   log('← ' + s);
-  if (s.startsWith('PROGRESS')) return;
+  // Replies are matched to the oldest waiting command; anything else (late replies) is ignored.
   const w = waiters[0];
   if (!w) return;
   if (w.re.test(s)) { waiters.shift(); w.ok(s); }
-  else if (s.startsWith('ERR')) { waiters.shift(); w.no(new Error(s)); }
+  else if (s.startsWith('ERR ' + w.cmd) || s.startsWith('ERR unknown')) { waiters.shift(); w.no(new Error(s)); }
 }
 
 async function write(c, value, withResponse) {
@@ -288,7 +306,7 @@ async function write(c, value, withResponse) {
 
 function command(text, re = /^OK/, ms = 10000) {
   return new Promise((ok, no) => {
-    const w = { re, ok: (s) => { clearTimeout(z); ok(s); }, no: (e) => { clearTimeout(z); no(e); } };
+    const w = { re, cmd: text.split(' ')[0], ok: (s) => { clearTimeout(z); ok(s); }, no: (e) => { clearTimeout(z); no(e); } };
     const z = setTimeout(() => { waiters = waiters.filter((x) => x !== w); no(new Error('timeout: ' + text)); }, ms);
     waiters.push(w);
     log('→ ' + text);
@@ -332,29 +350,40 @@ async function syncTime() {
   status(t('timeSynced') + s.slice(8));
 }
 
+function escapeRe(x) { return x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
 async function sendFile(name, b, progress) {
   const crc = crc32(b).toString(16).padStart(8, '0');
   let chunk = CHUNK;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const withResponse = attempt > 1;          // retries: slower but acknowledged writes
+    // Without-response writes are fast, but iOS queues them; so at most WINDOW bytes are sent ahead of what
+    // the device has confirmed. If confirmations stall, the rest goes as acknowledged (slower) writes.
+    let withResponse = attempt > 1;
     try {
-      await command(`FILE ${name} ${b.length} ${crc}`, /^READY/);
+      acked = 0;
+      await command(`FILE ${name} ${b.length} ${crc}`, new RegExp('^READY ' + escapeRe(name)));
       for (let i = 0; i < b.length; i += chunk) {
+        const end = Math.min(b.length, i + chunk);
+        if (!withResponse && end - acked > WINDOW) {
+          try { await waitAck(end - WINDOW, 4000); } catch (e) { log(`${name}: ${e.message}, switching to acknowledged writes`); withResponse = true; }
+        }
         try {
-          await write(chrData, b.subarray(i, Math.min(b.length, i + chunk)), withResponse);
+          await write(chrData, b.subarray(i, end), withResponse);
         } catch (e) {
           // an acknowledged write failing too may mean the packet is too long (small MTU)
           if (withResponse && chunk > 20) { chunk = 20; throw new Error('chunk reduced to 20 bytes'); }
           throw e;
         }
-        progress(Math.min(b.length, i + chunk));
+        progress(Math.max(acked, withResponse ? end : 0));
       }
-      await command('DONE', /^OK/, 15000);
+      await waitAck(b.length, 8000);           // every byte confirmed before DONE
+      progress(b.length);
+      await command('DONE', new RegExp('^OK DONE ' + escapeRe(name)), 15000);
       return;
     } catch (e) {
       log(`${name}: ${e.message} (${t('attempt')(attempt)})`);
       if (!device.gatt.connected) throw e;
-      try { await command('ABORT'); } catch (_) { /* ignore */ }
+      try { await command('ABORT', /^OK ABORT/); } catch (_) { /* ignore */ }
       progress(0);
       if (attempt === 3) throw e;
       await sleep(300);
